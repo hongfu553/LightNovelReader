@@ -9,6 +9,11 @@ class BookRequestDispatcher(
 ): Wenku8BookDataSource {
     private val source = Wenku8ApiDataSource(wenku8Api)
 
+    val isAvailable: Boolean
+        get() = source.isAvailable
+
+    fun canHandle(): Boolean = source.canHandle()
+
     override suspend fun getBookInformation(id: String) = source.getBookInformation(id)
 
     override suspend fun getBookVolumes(id: String) = source.getBookVolumes(id)

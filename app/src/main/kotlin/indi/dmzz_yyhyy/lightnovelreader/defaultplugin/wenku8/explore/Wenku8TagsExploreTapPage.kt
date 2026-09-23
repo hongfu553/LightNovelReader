@@ -21,7 +21,7 @@ class Wenku8TagsExploreTapPage(
         val rows = mutableListOf<ExploreBooksRow>()
         wenku8Api.getWithWenku8Cookie("${host}/modules/article/tags.php").component1()
             ?.select("a[href~=tags\\.php\\?t=.*]")
-            ?.slice(0..48)
+            ?.take(49)
             ?.map { "${host}/modules/article/" + it.attr("href") }
             ?.forEach { url ->
                 val soup = wenku8Api.getWithWenku8Cookie(url.split("=").component1()[0] + "=" +
@@ -48,13 +48,16 @@ class Wenku8TagsExploreTapPage(
         val titleList = soup.select("#content > table > tbody > tr:nth-child(2) > td > div > div:nth-child(2) > b > a")
             .map { it.text().split("(").getOrNull(0) ?: "" }
         val authorList = soup.select("#content > table > tbody > tr:nth-child(2) > td > div > div:nth-child(2) > p:nth-child(2)")
-            .slice(0..5)
+            .take(6)
             .map { it.text().split("/").getOrNull(0)?.split(":")?.get(1) ?: ""}
         val coverUrlList = soup.select("#content > table > tbody > tr:nth-child(2) > td > div > div:nth-child(1) > a > img")
             .map { it.attr("src") }
         return ExploreBooksRow(
             title = title,
-            bookList = (0..5).map {
+            bookList =             idlList.indices.mapNotNull {
+                if (it >= titleList.size || it >= authorList.size || it >= coverUrlList.size) {
+                    return@mapNotNull null
+                }
                 ExploreDisplayBook(
                     id = idlList[it],
                     title = titleList[it],

@@ -2,6 +2,7 @@ package indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.search
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.util.Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import indi.dmzz_yyhyy.lightnovelreader.data.book.BookRepository
 import indi.dmzz_yyhyy.lightnovelreader.data.bookshelf.BookshelfRepository
@@ -91,24 +92,28 @@ class ExploreSearchViewModel @Inject constructor(
         searchJob?.cancel()
         val searchType = exploreRepository.searchTypes.firstOrNull { it.type == _uiState.searchType } ?: return
         searchJob = viewModelScope.launch(Dispatchers.IO) {
-            val flow = exploreRepository.search(searchType, keyword)
-            _uiState.isLoading = false
-            flow.collect {
-                when(it) {
-                    is SearchResult.SingleBook -> launch(Dispatchers.Main) {
-                        _uiState.searchBarExpanded = true
-                        navigateToSingleBook(it.bookId)
-                    }
-                    is SearchResult.MultipleBook -> _uiState.searchResult.add(it.bookId to bookRepository.getBookInformationFlow(it.bookId))
-                    is SearchResult.Error -> {
-                        _uiState.isLoadingComplete = true
-                        _uiState.errorMessage = it.error.message.toString()
-                    }
-                    is SearchResult.End -> _uiState.isLoadingComplete = true
-                    is SearchResult.Empty -> {
-                        _uiState.isLoadingComplete = true
+            try {
+                exploreRepository.search(searchType, keyword).collect {
+                    _uiState.isLoading = false
+                    when(it) {
+                        is SearchResult.SingleBook -> launch(Dispatchers.Main) {
+                            _uiState.searchBarExpanded = true
+                            navigateToSingleBook(it.bookId)
+                        }
+                        is SearchResult.MultipleBook -> _uiState.searchResult.add(it.bookId to bookRepository.getBookInformationFlow(it.bookId))
+                        is SearchResult.Error -> {
+                            _uiState.isLoadingComplete = true
+                            _uiState.errorMessage = it.error.message ?: "Search request failed"
+                        }
+                        is SearchResult.End -> _uiState.isLoadingComplete = true
+                        is SearchResult.Empty -> _uiState.isLoadingComplete = true
                     }
                 }
+            } catch (e: Throwable) {
+                Log.e("Wenku8Explore", "Search request failed", e)
+                _uiState.isLoading = false
+                _uiState.isLoadingComplete = true
+                _uiState.errorMessage = e.message ?: "Search request failed"
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
