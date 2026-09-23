@@ -2,44 +2,32 @@ package indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8
 
 import android.content.Context
 import android.net.Uri
-import androidx.core.net.toUri
 import androidx.navigation.NavController
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
-import com.github.michaelbull.result.get
-import com.github.michaelbull.result.getOrElse
 import com.github.michaelbull.result.runCatching
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.book.BookRequestDispatcher
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.explore.Wenku8ExplorePageProvider
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.expanded.navigateToExploreExpandDestination
 import indi.dmzz_yyhyy.lightnovelreader.utils.ImageUtils
-import indi.dmzz_yyhyy.lightnovelreader.utils.network.UserAgentGenerator
 import indi.dmzz_yyhyy.lightnovelreader.utils.ofId
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
-import io.ktor.client.plugins.DefaultRequest
-import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.UserAgent
-import io.ktor.client.plugins.cookies.ConstantCookiesStorage
-import io.ktor.client.plugins.cookies.HttpCookies
-import io.ktor.client.plugins.logging.ANDROID
-import io.ktor.client.plugins.logging.LogLevel
-import io.ktor.client.plugins.logging.Logger
-import io.ktor.client.plugins.logging.Logging
-import io.ktor.client.request.cookie
+import io.ktor.client.request.headers
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsBytes
-import io.ktor.http.Cookie
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
 import io.ktor.http.isSuccess
-import io.ktor.http.userAgent
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.ChapterContent
 import io.nightfish.lightnovelreader.api.book.Volume
-import io.nightfish.lightnovelreader.api.book.WordCount
-import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
 import io.nightfish.lightnovelreader.api.error.WebRequestError
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
@@ -59,195 +47,184 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import kotlinx.io.EOFException
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.select.Elements
-import java.net.ConnectException
 import java.nio.charset.Charset
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import java.nio.charset.StandardCharsets
+import kotlin.io.encoding.Base64
+import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.time.Duration.Companion.milliseconds
 
+@WebDataSource("Wenku8", "LightNovelReader from wenku8.net")
+class Wenku8Api(
+    /**
+     * The relay's dynamic appver is intentionally not embedded in the public project.
+     * Supply the value produced by the official signer in the application build.
+     */
+    private val appver: String = ""
+) : WebBookDataSource {
+    companion object {
+        const val API_ENDPOINT = "https://wenku8-relay.mewx.org/"
+        const val API_VERSION = "1.30"
+        const val IMAGE_ENDPOINT = "https://img.wenku8.com"
+        val DOWNLOAD_ENDPOINTS = listOf(
+            "https://dl1.wenku8.com",
+            "https://dl2.wenku8.com"
+        )
+        private const val API_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 15; MewX-Wenku8/1.30.73) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.0.0"
+    }
 
-/** wenku8 页面使用的字符集。声明为 gbk，实际输出 GB18030，详见 [Wenku8Api.getWithWenku8Cookie] */
-private val WENKU8_CHARSET: Charset = Charset.forName("GB18030")
-
-@WebDataSource(
-    "Wenku8",
-    "LightNovelReader from wenku8.net"
-)
-class Wenku8Api : WebBookDataSource {
-    private val tagList = listOf(
-        "校园", "青春", "恋爱", "治愈", "群像",
-        "竞技", "音乐", "美食", "旅行", "欢乐向",
-        "经营", "职场", "斗智", "脑洞", "宅文化",
-        "穿越", "奇幻", "魔法", "异能", "战斗",
-        "科幻", "机战", "战争", "冒险", "龙傲天",
-        "悬疑", "犯罪", "复仇", "黑暗", "猎奇",
-        "惊悚", "间谍", "末日", "游戏", "大逃杀",
-        "青梅竹马", "妹妹", "女儿", "JK", "JC",
-        "大小姐", "性转", "伪娘", "人外",
-        "后宫", "百合", "耽美", "NTR", "女性视角"
-    )
     val ktorClient = HttpClient(OkHttp) {
-        install(UserAgent) {
-            agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                    "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                    "Chrome/125.0.0.0 Safari/537.36"
-        }
-
-        install(HttpCookies) {
-            storage = ConstantCookiesStorage(
-                *(
-                    createCookies("www.wenku8.net") +
-                    createCookies("www.wenku8.cc") +
-                    createCookies("www.wenku8.com")
-                ).toTypedArray()
-            )
-        }
-
-        install(DefaultRequest) {
-            headers {
-                append(HttpHeaders.Accept, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                append(HttpHeaders.AcceptLanguage, "zh-CN,zh;q=0.9,en;q=0.8")
-                append(HttpHeaders.CacheControl, "max-age=0")
-                append("Upgrade-Insecure-Requests", "1")
-                append("Sec-Fetch-Dest", "document")
-                append("Sec-Fetch-Mode", "navigate")
-                append("Sec-Fetch-Site", "none")
-                append("Sec-Fetch-User", "?1")
-            }
-        }
-        install(HttpRequestRetry) {
-            retryOnServerErrors(maxRetries = 3)
-            exponentialDelay()
-            retryIf { _, response ->
-                !response.status.isSuccess()
-            }
-            retryOnExceptionIf { _, cause ->
-                cause is EOFException || cause is ConnectException
-            }
-        }
-        install(HttpTimeout)
-        install(Logging) {
-            logger = Logger.ANDROID
-            level = LogLevel.HEADERS
+        install(UserAgent) { agent = API_USER_AGENT }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 15_000
+            socketTimeoutMillis = 30_000
         }
     }
-    private val hosts =
-        listOf("https://www.wenku8.cc", "https://www.wenku8.net", "https://www.wenku8.com")
-    var host = hosts[0]
-    private val bookRequestDispatcher = BookRequestDispatcher(host, this)
-    private val isOffLineStateFlow = MutableStateFlow(false)
-    private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
-    private val requestLimiter = Semaphore(3)
-    private var coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
-    private val titleRegex = Regex("(.*) ?[(（](.*)[)）] ?$")
-    override val cache = Cache(
-        timeout = 2 * 60 * 60 * 1000
-    )
+
+    private val hosts = listOf("https://www.wenku8.net")
+    var host = hosts.first()
+    private val bookRequestDispatcher = BookRequestDispatcher(this)
+    private val offlineState = MutableStateFlow(false)
+    private val limiter = Semaphore(3)
+    private val scope = CoroutineScope(Dispatchers.IO)
+
+    override val cache = Cache(timeout = 2 * 60 * 60 * 1000)
     override val permits = 5
+    override val id = "Wenku8".ofId()
+    override var offLine: Boolean = true
+    override val isOffLineFlow = offlineState
 
     override fun onLoad() {
-        coroutineScope.launch {
+        scope.launch {
             while (currentCoroutineContext().isActive) {
                 offLine = isOffLine()
-                isOffLineStateFlow.emit(offLine)
-                delay((if (offLine) 3000 else 100000).milliseconds)
+                offlineState.emit(offLine)
+                delay((if (offLine) 3_000 else 100_000).milliseconds)
             }
         }
     }
 
-    override var offLine: Boolean = true
-
-    override val isOffLineFlow = isOffLineStateFlow
-
-    fun wenku8Cookies(): Map<String, String> = mapOf(
-        "jieqiUserInfo" to "jieqiUserId=1125456,jieqiUserName=yyhyy,jieqiUserGroup=3,jieqiUserVip=0,jieqiUserPassword=eb62861281462fd923fb99218735fef0,jieqiUserName_un=yyhyy,jieqiUserHonor_un=&#x4E2D;&#x7EA7;&#x4F1A;&#x5458;,jieqiUserGroupName_un=&#x666E;&#x901A;&#x4F1A;&#x5458;,jieqiUserLogin=1739294499",
-        "jieqiVisitInfo" to "jieqiUserLogin=1739294499,jieqiUserId=1125456",
-        "HMACCOUNT" to "E7837B0FF79F0590",
-    )
-
-    fun createCookies(domain: String): List<Cookie> {
-        return wenku8Cookies().map {
-            Cookie(
-                name = it.key,
-                value = it.value,
-                domain = domain,
-            )
-        }
-    }
-
-
-    suspend fun anyTrue(
-        tasks: List<suspend () -> Boolean>
-    ): Boolean = coroutineScope {
-        val deferredList = tasks.map { task ->
-            async {
-                task()
-            }
-        }.toMutableList()
-
-        try {
-            while (deferredList.isNotEmpty()) {
-                val (finished, value) = select {
-                    deferredList.forEach { deferred ->
-                        deferred.onAwait { result ->
-                            deferred to result
+    @OptIn(ExperimentalEncodingApi::class)
+    internal suspend fun apiPost(command: String): Result<ByteArray, WebRequestError> =
+        withContext(Dispatchers.IO) {
+            limiter.withPermit {
+                if (appver.isBlank()) {
+                    return@withPermit Err(
+                        WebRequestError("API 配置错误", "未提供 Wenku8 relay appver")
+                    )
+                }
+                runCatching {
+                    val body = "&appver=$appver" +
+                        "&request=${Base64.encode(command.toByteArray(StandardCharsets.UTF_8))}" +
+                        "&timetoken=${System.currentTimeMillis()}"
+                    val response = ktorClient.post(API_ENDPOINT) {
+                        contentType(ContentType.Application.FormUrlEncoded)
+                        headers {
+                            append(HttpHeaders.Accept, "text/xml, application/xml, text/plain, */*")
+                            append(HttpHeaders.AcceptEncoding, "gzip")
                         }
+                        setBody(body)
                     }
-                }
-
-                deferredList.remove(finished)
-
-                if (value) {
-                    deferredList.forEach { it.cancel() }
-                    return@coroutineScope true
-                }
+                    val bytes = response.bodyAsBytes()
+                    if (!response.status.isSuccess()) {
+                        throw IllegalStateException("Wenku8 API HTTP ${response.status.value}")
+                    }
+                    bytes
+                }.fold(
+                    onSuccess = { Ok(it) },
+                    onFailure = {
+                        Err(WebRequestError("网络请求失败", it.message ?: "Wenku8 API request failed"))
+                    }
+                )
             }
-
-            false
-        } finally {
-            deferredList.forEach { it.cancel() }
         }
+
+    internal suspend fun cdnGet(url: String): Result<ByteArray, WebRequestError> =
+        runCatching {
+            val response = ktorClient.get(url) {
+                headers { append(HttpHeaders.Accept, "*/*") }
+            }
+            val bytes = response.bodyAsBytes()
+            if (!response.status.isSuccess()) {
+                throw IllegalStateException("Wenku8 CDN HTTP ${response.status.value}")
+            }
+            bytes
+        }.fold(
+            onSuccess = { Ok(it) },
+            onFailure = {
+                Err(WebRequestError("CDN 请求失败", it.message ?: "Wenku8 CDN request failed"))
+            }
+        )
+
+    fun coverUrl(bookId: String): String =
+        "$IMAGE_ENDPOINT/image/${bookId.toInt() / 1000}/$bookId/${bookId}s.jpg"
+
+    fun pictureUrl(url: String): String = url
+
+    suspend fun getFullNovelContent(bookId: String): Result<String, WebRequestError> {
+        var lastError: WebRequestError? = null
+        for (endpoint in DOWNLOAD_ENDPOINTS) {
+            val result = cdnGet("$endpoint/txtutf8/${bookId.toInt() / 1000}/$bookId.txt")
+            val bytes = result.get()
+            if (bytes != null) return Ok(String(bytes, StandardCharsets.UTF_8))
+            lastError = result.component2()
+        }
+        return Err(lastError ?: WebRequestError("CDN 请求失败", "无法下载全本"))
     }
 
-    override suspend fun isOffLine(): Boolean = withContext(Dispatchers.IO) {
-        suspend fun webSite(index: Int): Boolean = runCatching {
-            ktorClient.get(hosts[index]) {
-                userAgent(UserAgentGenerator.generate())
-                wenku8Cookies().forEach { (name, value) ->
-                    cookie(name, value)
-                }
-            }.status.isSuccess()
-        }.getOrElse { false }
-        return@withContext !anyTrue(listOf(
-            { webSite(0) },
-            { webSite(1) },
-            { webSite(2) },
-        ))
-    }
-
-    override val id = "Wenku8".ofId()
+    override suspend fun isOffLine(): Boolean = runCatching {
+        ktorClient.post(API_ENDPOINT) { setBody("") }.status.isSuccess()
+    }.getOrDefault(false).not()
 
     override suspend fun getBookInformation(id: String) = bookRequestDispatcher.getBookInformation(id)
-
     override suspend fun getBookVolumes(id: String) = bookRequestDispatcher.getBookVolumes(id)
-
-    override suspend fun getChapterContent(chapterId: String, bookId: String) = bookRequestDispatcher.getChapterContent(chapterId, bookId)
+    override suspend fun getChapterContent(chapterId: String, bookId: String) =
+        bookRequestDispatcher.getChapterContent(chapterId, bookId)
 
     override val searchProvider: SearchProvider = Wenku8SearchProvider(bookRequestDispatcher)
     override val explorePageProvider: ExplorePageProvider = Wenku8ExplorePageProvider(host, this)
 
-
     override fun progressBookTagClick(tag: String, navController: NavController) {
-        if (tagList.contains(tag))
-            navController.navigateToExploreExpandDestination(tag)
+        navController.navigateToExploreExpandDestination(tag)
+    }
+
+    /**
+     * Kept for the legacy explore UI, which still renders the site's non-book menus.
+     * Book/detail/chapter requests never use this path.
+     */
+    suspend fun getWithWenku8Cookie(url: String): Result<Document, Throwable> =
+        runCatching {
+            Jsoup.parse(String(ktorClient.get(url).bodyAsBytes(), Charset.forName("GB18030")))
+        }
+
+    fun getBookInformationListFromBookCards(
+        elements: Elements
+    ): List<Pair<String, Result<BookInformation, WebRequestError>>> = elements.mapNotNull { element ->
+        val link = element.selectFirst("a[href*=/book/]") ?: return@mapNotNull null
+        val id = link.attr("href").substringAfter("/book/").substringBefore(".htm")
+        if (id.isBlank()) return@mapNotNull null
+        val title = link.attr("title").ifBlank { link.text() }
+        id to Ok(
+            BookInformation(
+                id = id,
+                title = title,
+                author = "",
+                description = "",
+                publishingHouse = "",
+                wordCount = io.nightfish.lightnovelreader.api.book.WordCount(-1),
+                lastUpdated = java.time.LocalDateTime.MIN,
+                isComplete = false,
+                coverUri = link.selectFirst("img")?.attr("src")?.let(Uri::parse) ?: Uri.EMPTY
+            )
+        )
     }
 
     override suspend fun getCoverUriInVolume(
@@ -255,103 +232,31 @@ class Wenku8Api : WebBookDataSource {
         volume: Volume,
         volumeChapterContentMap: MutableMap<String, ChapterContent>,
         context: Context
-    ): Uri? {
-        return volume.chapters
-            .find { it.title.endsWith("插图") }
-            ?.let { chapterInformation ->
-                val chapterContent = volumeChapterContentMap[chapterInformation.id] ?: return null
-                chapterContent.content["components"]?.jsonArray
-                    ?.mapNotNull { it.jsonObject }
-                    ?.filter {
-                        it["id"]?.jsonPrimitive?.content == ImageComponentData.id.toString()
-                    }
-                    ?.forEach {
-                        val uri = it["data"]?.jsonObject["uri"]?.jsonPrimitive?.content?.toUri()
-                            ?: return null
-                        val bitmap = ImageUtils.uriToBitmap(uri, context).get() ?: return@forEach
-                        if (bitmap.height > bitmap.width) return uri
-                    }
-                return null
+    ): Uri? = volume.chapters.find { it.title.endsWith("插图") }?.let { chapter ->
+        volumeChapterContentMap[chapter.id]?.content?.get("components")?.jsonArray
+            ?.mapNotNull { it.jsonObject["data"]?.jsonObject?.get("uri")?.jsonPrimitive?.content }
+            ?.map(Uri::parse)
+            ?.firstOrNull { uri ->
+                ImageUtils.uriToBitmap(uri, context).get()?.let { it.height > it.width } == true
             }
     }
 
-    fun getBookInformationListFromBookCards(elements: Elements): List<Pair<String, Result<BookInformation, WebRequestError>>> =
-        elements
-            .mapNotNull { element ->
-                if (element.text().contains("因版权问题")) {
-                    val id = element
-                        .selectFirst("div > div:nth-child(1) > a")
-                        ?.attr("href")
-                        ?.replace("/book/", "")
-                        ?.replace(".htm", "") ?: return@mapNotNull null
-                    val titleGroup = element.selectFirst("div > div:nth-child(1) > a")
-                        ?.attr("title")
-                        ?.let { it1 -> titleRegex.find(it1)?.groups }
-                    val title = titleGroup?.get(1)?.value
-                        ?: element.selectFirst("div > div:nth-child(1) > a")
-                            ?.attr("title") ?: ""
-                    id to Err(WebRequestError("版权错误", "由于「$title」为Wenku8的版权"))
-                } else {
-                    val id = element.selectFirst("div > div:nth-child(1) > a")
-                        ?.attr("href")
-                        ?.replace("/book/", "")
-                        ?.replace(".htm", "") ?: ""
-                    val titleGroup = element.selectFirst("div > div:nth-child(1) > a")
-                        ?.attr("title")
-                        ?.let { it1 -> titleRegex.find(it1)?.groups }
-                    id to BookInformation(
-                        id = id,
-                        title = titleGroup?.get(1)?.value
-                            ?: element.selectFirst("div > div:nth-child(1) > a")
-                                ?.attr("title") ?: "",
-                        subtitle = titleGroup?.get(2)?.value ?: "",
-                        coverUri = element.selectFirst("div > div:nth-child(1) > a > img")
-                            ?.attr("src")?.toUri() ?: Uri.EMPTY,
-                        author = element.selectFirst("div > div:nth-child(2) > p:nth-child(2)")
-                            ?.text()?.split("/")?.getOrNull(0)
-                            ?.split(":")?.getOrNull(1) ?: "",
-                        description = element.selectFirst("div > div:nth-child(2) > p:nth-child(5)")
-                            ?.text()?.replace("简介:", "") ?: "",
-                        tags = element.selectFirst("div > div:nth-child(2) > p:nth-child(4) > span")
-                            ?.text()?.split(" ") ?: emptyList(),
-                        publishingHouse = element.selectFirst("div > div:nth-child(2) > p:nth-child(2)")
-                            ?.text()?.split("/")?.getOrNull(1)
-                            ?.split(":")?.getOrNull(1) ?: "",
-                        wordCount = WordCount(
-                            element.selectFirst("div > div:nth-child(2) > p:nth-child(3)")
-                                ?.text()?.split("/")?.getOrNull(1)
-                                ?.split(":")?.getOrNull(1)
-                                ?.replace("K", "")?.toInt()?.times(1000) ?: -1
-                        ),
-                        lastUpdated = element.selectFirst("div > div:nth-child(2) > p:nth-child(3)")
-                            ?.text()?.split("/")?.getOrNull(0)
-                            ?.split(":")?.getOrNull(1)
-                            ?.let {
-                                LocalDate.parse(it, dateTimeFormatter)
-                            }
-                            ?.atStartOfDay() ?: LocalDateTime.MIN,
-                        isComplete = element.selectFirst("div > div:nth-child(2) > p:nth-child(3)")
-                            ?.text()?.split("/")?.getOrNull(2) == "已完结"
-                    ).let { Ok(it) }
+    suspend fun anyTrue(tasks: List<suspend () -> Boolean>): Boolean = coroutineScope {
+        val deferred = tasks.map { async { it() } }.toMutableList()
+        try {
+            while (deferred.isNotEmpty()) {
+                val (finished, value) = select {
+                    deferred.forEach { task -> task.onAwait { task to it } }
+                }
+                deferred.remove(finished)
+                if (value) {
+                    deferred.forEach { it.cancel() }
+                    return@coroutineScope true
                 }
             }
-
-    suspend fun getWithWenku8Cookie(url: String): Result<Document, Throwable> = withContext(Dispatchers.IO) {
-        requestLimiter.withPermit {
-            runCatching {
-                // wenku8 实际以 GB18030 输出：• ・ 〜 等字符不在 GBK 字符集内，
-                // 会以 GB18030 独有的 4 字节序列传输，按 GBK 解码后碎成乱码（issue #485）。
-                // GB18030 是 GBK 的严格超集，原本能正确解出的内容不受影响。
-                //
-                // 这里读原始字节自行解码，而不是把字符集交给 bodyAsText：
-                // 后者的参数只是 fallback，响应头声明了 charset 时并不生效。
-                val res = String(ktorClient.get(url).bodyAsBytes(), WENKU8_CHARSET)
-                Jsoup.parse(res).outputSettings(
-                    Document.OutputSettings()
-                        .prettyPrint(false)
-                        .syntax(Document.OutputSettings.Syntax.xml)
-                )
-            }
+            false
+        } finally {
+            deferred.forEach { it.cancel() }
         }
     }
 }
