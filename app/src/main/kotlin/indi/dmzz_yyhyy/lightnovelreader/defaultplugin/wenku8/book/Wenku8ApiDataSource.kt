@@ -3,7 +3,6 @@ package indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.book
 import android.net.Uri
 import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.coroutines.coroutineBinding
-import com.github.michaelbull.result.bind
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.get
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.Wenku8Api
