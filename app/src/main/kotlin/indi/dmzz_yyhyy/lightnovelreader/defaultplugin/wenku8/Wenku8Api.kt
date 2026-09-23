@@ -6,7 +6,6 @@ import androidx.navigation.NavController
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
-import com.github.michaelbull.result.runCatching
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.book.BookRequestDispatcher
 import indi.dmzz_yyhyy.lightnovelreader.defaultplugin.wenku8.explore.Wenku8ExplorePageProvider
 import indi.dmzz_yyhyy.lightnovelreader.ui.home.explore.expanded.navigateToExploreExpandDestination
@@ -17,12 +16,13 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.UserAgent
 import io.ktor.client.request.headers
-import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsBytes
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.nightfish.lightnovelreader.api.book.BookInformation
@@ -121,7 +121,7 @@ class Wenku8Api(
                         WebRequestError("API 配置错误", "未提供 Wenku8 relay appver")
                     )
                 }
-                runCatching {
+                kotlin.runCatching {
                     val body = "&appver=$appver" +
                         "&request=${Base64.encode(command.toByteArray(StandardCharsets.UTF_8))}" +
                         "&timetoken=${System.currentTimeMillis()}"
@@ -148,8 +148,9 @@ class Wenku8Api(
         }
 
     internal suspend fun cdnGet(url: String): Result<ByteArray, WebRequestError> =
-        runCatching {
-            val response = ktorClient.get(url) {
+        kotlin.runCatching {
+            val response = ktorClient.request(url) {
+                method = HttpMethod.Get
                 headers { append(HttpHeaders.Accept, "*/*") }
             }
             val bytes = response.bodyAsBytes()
@@ -173,14 +174,14 @@ class Wenku8Api(
         var lastError: WebRequestError? = null
         for (endpoint in DOWNLOAD_ENDPOINTS) {
             val result = cdnGet("$endpoint/txtutf8/${bookId.toInt() / 1000}/$bookId.txt")
-            val bytes = result.get()
+            val bytes = result.component1()
             if (bytes != null) return Ok(String(bytes, StandardCharsets.UTF_8))
             lastError = result.component2()
         }
         return Err(lastError ?: WebRequestError("CDN 请求失败", "无法下载全本"))
     }
 
-    override suspend fun isOffLine(): Boolean = runCatching {
+    override suspend fun isOffLine(): Boolean = kotlin.runCatching {
         ktorClient.post(API_ENDPOINT) { setBody("") }.status.isSuccess()
     }.getOrDefault(false).not()
 
@@ -201,9 +202,16 @@ class Wenku8Api(
      * Book/detail/chapter requests never use this path.
      */
     suspend fun getWithWenku8Cookie(url: String): Result<Document, Throwable> =
-        runCatching {
-            Jsoup.parse(String(ktorClient.get(url).bodyAsBytes(), Charset.forName("GB18030")))
-        }
+        kotlin.runCatching {
+            Jsoup.parse(
+                String(
+                    ktorClient.request(url) {
+                        method = HttpMethod.Get
+                    }.bodyAsBytes(),
+                    Charset.forName("GB18030")
+                )
+            )
+        }.fold({ Ok(it) }, { Err(it) })
 
     fun getBookInformationListFromBookCards(
         elements: Elements
@@ -232,13 +240,20 @@ class Wenku8Api(
         volume: Volume,
         volumeChapterContentMap: MutableMap<String, ChapterContent>,
         context: Context
-    ): Uri? = volume.chapters.find { it.title.endsWith("插图") }?.let { chapter ->
-        volumeChapterContentMap[chapter.id]?.content?.get("components")?.jsonArray
+    ): Uri? {
+        val chapter = volume.chapters.find { it.title.endsWith("插图") } ?: return null
+        val uris = volumeChapterContentMap[chapter.id]?.content?.get("components")?.jsonArray
             ?.mapNotNull { it.jsonObject["data"]?.jsonObject?.get("uri")?.jsonPrimitive?.content }
             ?.map(Uri::parse)
-            ?.firstOrNull { uri ->
-                ImageUtils.uriToBitmap(uri, context).get()?.let { it.height > it.width } == true
+            ?: return null
+        for (uri in uris) {
+            if (ImageUtils.uriToBitmap(uri, context).component1()?.let {
+                    it.height > it.width
+                } == true) {
+                return uri
             }
+        }
+        return null
     }
 
     suspend fun anyTrue(tasks: List<suspend () -> Boolean>): Boolean = coroutineScope {
