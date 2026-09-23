@@ -54,20 +54,23 @@ class Wenku8AllExploreTapPage(
 
     private fun getBooksRow(soup: Document?, title: String): ExploreBooksRow {
         val idlList = soup?.select("#content > table.grid > tbody > tr > td > div > div:nth-child(1) > a")
-            ?.slice(0..5)
+            ?.take(6)
             ?.map { it.attr("href").replace("/book/", "").replace(".htm", "") }
         val titleList = soup?.select("#content > table.grid > tbody > tr > td > div > div:nth-child(2) > b > a")
-            ?.slice(0..5)
+            ?.take(6)
             ?.map { it.text().split("(").getOrNull(0) ?: "" } ?: emptyList()
         val authorList = soup?.select("#content > table.grid > tbody > tr > td > div > div:nth-child(2) > p:nth-child(2)")
-            ?.slice(0..5)
+            ?.take(6)
             ?.map { it.text().split("/").getOrNull(0)?.split(":")?.get(1) ?: ""} ?: emptyList()
         val coverUrlList = soup?.select("#content > table.grid > tbody > tr > td > div > div:nth-child(1) > a > img")
-            ?.slice(0..5)
+            ?.take(6)
             ?.map { it.attr("src") } ?: emptyList()
         return ExploreBooksRow(
             title = title,
-            bookList = idlList?.indices?.map {
+            bookList = idlList?.indices?.mapNotNull {
+                if (it >= titleList.size || it >= authorList.size || it >= coverUrlList.size) {
+                    return@mapNotNull null
+                }
                 ExploreDisplayBook(
                     id = idlList[it],
                     title = titleList[it],

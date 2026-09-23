@@ -34,6 +34,7 @@ import io.nightfish.lightnovelreader.api.web.WebBookDataSource
 import io.nightfish.lightnovelreader.api.web.WebDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -181,9 +182,12 @@ class Wenku8Api(
         return Err(lastError ?: WebRequestError("CDN 请求失败", "无法下载全本"))
     }
 
-    override suspend fun isOffLine(): Boolean = kotlin.runCatching {
-        ktorClient.post(API_ENDPOINT) { setBody("") }.status.isSuccess()
-    }.getOrDefault(false).not()
+    /**
+     * Do not probe the relay with an empty request. The relay rejects that request
+     * even when it is healthy, which made the Explore UI fast-fail as "offline"
+     * before a real API request could be attempted.
+     */
+    override suspend fun isOffLine(): Boolean = false
 
     override suspend fun getBookInformation(id: String) = bookRequestDispatcher.getBookInformation(id)
     override suspend fun getBookVolumes(id: String) = bookRequestDispatcher.getBookVolumes(id)
@@ -211,7 +215,13 @@ class Wenku8Api(
                     Charset.forName("GB18030")
                 )
             )
-        }.fold({ Ok(it) }, { Err(it) })
+        }.fold(
+            onSuccess = { Ok(it) },
+            onFailure = {
+                Log.e("Wenku8Explore", "HTML request failed: $url", it)
+                Err(it)
+            }
+        )
 
     fun getBookInformationListFromBookCards(
         elements: Elements

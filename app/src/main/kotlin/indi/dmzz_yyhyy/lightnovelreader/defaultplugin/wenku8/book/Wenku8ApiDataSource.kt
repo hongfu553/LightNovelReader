@@ -30,6 +30,9 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
 class Wenku8ApiDataSource(private val api: Wenku8Api) : Wenku8BookDataSource {
+    val isAvailable: Boolean = true
+    fun canHandle(): Boolean = isAvailable
+
     private val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
     private fun text(bytes: ByteArray) = String(bytes, StandardCharsets.UTF_8)
