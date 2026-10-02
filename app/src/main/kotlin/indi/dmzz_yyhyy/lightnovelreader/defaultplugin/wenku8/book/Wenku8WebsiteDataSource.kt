@@ -28,6 +28,7 @@ import org.jsoup.nodes.Element
 import org.jsoup.nodes.TextNode
 import java.net.URLEncoder
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.time.Duration.Companion.seconds
 
@@ -37,6 +38,16 @@ class Wenku8WebsiteDataSource(
 ) : Wenku8BookDataSource {
     private val titleRegex = Regex("(.*) ?[(（](.*)[)）] ?$")
     private val dateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+    private fun parseLocalDateOrNull(value: String?): LocalDate? {
+        val normalized = value
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return runCatching {
+            LocalDate.parse(normalized, dateTimeFormatter)
+        }.getOrNull()
+    }
+
     private fun url(string: String) = "$host/$string"
 
     override suspend fun getBookInformation(id: String): Result<BookInformation, WebRequestError> =
@@ -109,9 +120,9 @@ class Wenku8WebsiteDataSource(
                     .selectFirstXpath("//*[@id=\"content\"]/div[1]/table[1]/tbody/tr[2]/td[4]")
                     ?.text()
                     ?.replace("最后更新：", "")
-                    ?.let { LocalDate.parse(it, dateTimeFormatter) }
+                    ?.let(::parseLocalDateOrNull)
                     ?.atStartOfDay()
-                    ?: Err(WebRequestError("解析错误", "无法解析该书本的信息(id=$id)")).bind(),
+                    ?: LocalDateTime.MIN,
                 isComplete = soup
                     .selectFirstXpath("//*[@id=\"content\"]/div[1]/table[1]/tbody/tr[2]/td[3]")
                     ?.text()
