@@ -1,35 +1,52 @@
 name: DebugApkBuild
 on:
-  merge_group:
+  push:
+    branches: [ main, master, dev/**, release/** ] # 確保 Merge 後會觸發
+    paths:
+      - 'app/src/**'
+      - 'plugin/**' # 加入 plugin 目錄監聽
+      - 'build.gradle.kts'
+      - 'gradle.properties'
+      - 'settings.gradle'
   pull_request:
     branches: [ dev/**, release/** ]
     paths:
-      - app/src/**
-      - build.gradle.kts
-      - gradle.properties
-      - settings.gradle
+      - 'app/src/**'
+      - 'plugin/**'
+      - 'build.gradle.kts'
+      - 'gradle.properties'
+      - 'settings.gradle'
+  workflow_dispatch: # 允許在 GitHub 網頁手動點擊執行
 
 jobs:
   BuildDebugApk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4 # 更新至 v4
+      
       - name: Setup Java 17
         uses: actions/setup-java@v3.6.0
         with:
           distribution: zulu
           java-version: 17
+          
       - name: Build with Gradle
         uses: gradle/actions/setup-gradle@v3
+        
       - name: make gradle wrapper executable
         if: ${{ runner.os != 'Windows' }}
         run: chmod +x ./gradlew
+        
       - name: Retrieve Version
-        run: |
-          echo "::set-output name=VERSION_CODE::$(${{github.workspace}}/gradlew -q app:printVersionCode)"
         id: android_version
+        run: |
+          # 改用官方建議的新版 GITHUB_OUTPUT 語法
+          VERSION_CODE=$(./gradlew -q app:printVersionCode)
+          echo "VERSION_CODE=$VERSION_CODE" >> $GITHUB_OUTPUT
+          
       - name: Build debug APK
         run: ./gradlew assembleDebug
+        
       - uses: actions/upload-artifact@v4
         with:
           name: LightNovelReader-${{steps.android_version.outputs.VERSION_CODE}}-debug
