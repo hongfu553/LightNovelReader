@@ -23,7 +23,16 @@ class BookRequestDispatcher(
             )
         )
         for (dataSource in source) {
-            result = block.invoke(dataSource)
+            result = runCatching {
+                block.invoke(dataSource)
+            }.getOrElse { throwable ->
+                Err(
+                    WebRequestError(
+                        "Network request failed",
+                        throwable.message ?: "Unknown error"
+                    )
+                )
+            }
             if (result.isErr) continue
             return result
         }

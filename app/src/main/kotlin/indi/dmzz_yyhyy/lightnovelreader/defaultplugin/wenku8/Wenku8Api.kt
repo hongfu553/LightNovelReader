@@ -150,6 +150,15 @@ class Wenku8Api : WebBookDataSource {
     private val requestLimiter = Semaphore(3)
     private var coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
     private val titleRegex = Regex("(.*) ?[(（](.*)[)）] ?$")
+    private fun parseLocalDateOrNull(value: String?): LocalDate? {
+        val normalized = value
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        return runCatching {
+            LocalDate.parse(normalized, dateTimeFormatter)
+        }.getOrNull()
+    }
     override val cache = Cache(
         timeout = 2 * 60 * 60 * 1000
     )
@@ -330,9 +339,7 @@ class Wenku8Api : WebBookDataSource {
                         lastUpdated = element.selectFirst("div > div:nth-child(2) > p:nth-child(3)")
                             ?.text()?.split("/")?.getOrNull(0)
                             ?.split(":")?.getOrNull(1)
-                            ?.let {
-                                LocalDate.parse(it, dateTimeFormatter)
-                            }
+                            ?.let(::parseLocalDateOrNull)
                             ?.atStartOfDay() ?: LocalDateTime.MIN,
                         isComplete = element.selectFirst("div > div:nth-child(2) > p:nth-child(3)")
                             ?.text()?.split("/")?.getOrNull(2) == "已完结"
@@ -349,7 +356,11 @@ class Wenku8Api : WebBookDataSource {
                 //
                 // 这里读原始字节自行解码，而不是把字符集交给 bodyAsText：
                 // 后者的参数只是 fallback，响应头声明了 charset 时并不生效。
-                val res = String(ktorClient.get(url).bodyAsBytes(), WENKU8_CHARSET)
+                val response = ktorClient.get(url)
+                if (!response.status.isSuccess()) {
+                    error("HTTP ${response.status.value} for $url")
+                }
+                val res = String(response.bodyAsBytes(), WENKU8_CHARSET)
                 Jsoup.parse(res).outputSettings(
                     Document.OutputSettings()
                         .prettyPrint(false)
